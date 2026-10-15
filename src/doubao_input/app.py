@@ -57,6 +57,10 @@ class DoubaoInputApp(Gtk.Application):
         self._injector: Injector | None = None
         self._last_press_at: float = 0.0
         self._tray_process = None
+        self._previous_recording_state = RecordingState.IDLE.value
+        self._startup_timer = None
+        self._feedback_timer = None
+        self.app_state.connect("recording-state-changed", self._on_recording_state_changed)
         for name, callback in (("show-control", self._on_activate),
                                ("quit", lambda *_: self._quit())):
             action = Gio.SimpleAction.new(name, None)
@@ -189,6 +193,44 @@ class DoubaoInputApp(Gtk.Application):
 
     def _on_ptt_error(self, msg: str) -> None:
         logger.warning("PTT error: %s", msg)
+
+    def _show_feedback(self, message: str) -> bool:
+        if self.app_state.recording_state != RecordingState.IDLE:
+            return GLib.SOURCE_REMOVE
+        self._overlay.show(message)
+        def hide():
+            self._feedback_timer = None
+            self._overlay.hide()
+            return GLib.SOURCE_REMOVE
+        self._feedback_timer = GLib.timeout_add(2500, hide)
+        return GLib.SOURCE_REMOVE
+
+    def _on_recording_state_changed(self, _state, value: str) -> None:
+        previous = self._previous_recording_state
+        self._previous_recording_state = value
+        if self._startup_timer is not None:
+            GLib.source_remove(self._startup_timer)
+            self._startup_timer = None
+        if self._feedback_timer is not None:
+            GLib.source_remove(self._feedback_timer)
+            self._feedback_timer = None
+        if value == RecordingState.STARTING.value:
+            def startup_timeout():
+                self._startup_timer = None
+                if self.app_state.recording_state == RecordingState.STARTING:
+                    self._tm.handle_cancel()
+                    self._show_feedback("识别服务连接超时，请重试")
+                return GLib.SOURCE_REMOVE
+            self._startup_timer = GLib.timeout_add(8000, startup_timeout)
+        elif value == RecordingState.RECORDING.value:
+            self._overlay.set_status("正在聆听，请说话…")
+        elif value == RecordingState.STOPPING.value:
+            self._overlay.set_status("正在识别…")
+        elif (value == RecordingState.IDLE.value
+              and previous == RecordingState.STOPPING.value
+              and not self.app_state.transcription_text.strip()):
+            # reset_to_idle 会先隐藏浮窗，下一轮再显示明确的空结果反馈。
+            GLib.idle_add(self._show_feedback, "未识别到语音，请重试")
 
     # ---- Paste ----
 

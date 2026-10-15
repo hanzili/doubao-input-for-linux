@@ -29,6 +29,21 @@ class BackgroundTests(unittest.TestCase):
         capture.start(lambda _data: None)
         self.assertEqual(capture._on_rms, app._overlay.push_rms)
 
+    def test_connected_state_updates_starting_message(self):
+        from doubao_input.doubao.app_state import RecordingState
+        app = DoubaoInputApp()
+        app._overlay = MagicMock()
+        app.app_state.recording_state = RecordingState.STARTING
+        self.assertIsNotNone(app._startup_timer)
+        app.app_state.recording_state = RecordingState.RECORDING
+        self.assertIsNone(app._startup_timer)
+        app._overlay.set_status.assert_called_with("正在聆听，请说话…")
+        app.app_state.recording_state = RecordingState.STOPPING
+        app._overlay.set_status.assert_called_with("正在识别…")
+        with patch('doubao_input.app.GLib.idle_add') as idle:
+            app.app_state.recording_state = RecordingState.IDLE
+            idle.assert_called_once_with(app._show_feedback, "未识别到语音，请重试")
+
     def test_close_hides_and_reopen_keeps_same_window(self):
         control = ControlWindow(MagicMock(), MagicMock(), MagicMock(), MagicMock())
         window = MagicMock()
