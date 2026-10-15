@@ -13,12 +13,13 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 import sys
 
 import gi
 
 gi.require_version("Gtk", "4.0")
-from gi.repository import GLib, Gtk  # type: ignore
+from gi.repository import Gio, GLib, Gtk  # type: ignore
 
 from doubao_input.doubao.app_state import AppState, LoginStatus, RecordingState
 from doubao_input.doubao.asr_client import ASRClient
@@ -30,6 +31,7 @@ from doubao_input.inject.injector import Injector
 from doubao_input.trigger.evdev_ptt import EvdevPtt
 from doubao_input.ui.control_window import ControlWindow
 from doubao_input.ui.overlay import Overlay
+from doubao_input.ui.tray import start_tray
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +56,12 @@ class DoubaoInputApp(Gtk.Application):
         self._tm: TranscriptionManager | None = None
         self._injector: Injector | None = None
         self._last_press_at: float = 0.0
+        self._tray_process = None
+        for name, callback in (("show-control", self._on_activate),
+                               ("quit", lambda *_: self._quit())):
+            action = Gio.SimpleAction.new(name, None)
+            action.connect("activate", lambda _action, _parameter, cb=callback: cb(self))
+            self.add_action(action)
 
     # ---- Gtk.Application hooks (signal handlers, not do_*) ----
 
@@ -79,6 +87,14 @@ class DoubaoInputApp(Gtk.Application):
 
     def _on_shutdown(self, _app) -> None:
         logger.info("shutting down")
+        if self._tray_process is not None:
+            self._tray_process.terminate()
+            try:
+                self._tray_process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self._tray_process.kill()
+                self._tray_process.wait()
+            self._tray_process = None
         if self._ptt:
             self._ptt.stop()
         if self._injector:
@@ -102,8 +118,10 @@ class DoubaoInputApp(Gtk.Application):
         # class globally.
         _ac_orig_start = self._audio_capture.start
         def _start_with_rms(on_audio_data):
+            # 麦克风测试有自己的统计回调，不能被波形回调覆盖。
+            if self._audio_capture._on_rms is None:
+                self._audio_capture._on_rms = self._overlay.push_rms
             _ac_orig_start(on_audio_data)
-            self._audio_capture._on_rms = self._overlay.push_rms
         self._audio_capture.start = _start_with_rms  # type: ignore[assignment]
         _ac_orig_stop = self._audio_capture.stop
         def _stop_clear_rms():
@@ -147,6 +165,7 @@ class DoubaoInputApp(Gtk.Application):
             logger.warning("evdev PTT failed to start; will retry in background")
             # Don't block; user can still open the control window to diagnose.
 
+        self._tray_process = start_tray()
         logger.info("build complete")
 
     # ---- PTT callbacks (run on GTK main thread) ----
