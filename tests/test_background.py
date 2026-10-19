@@ -29,6 +29,32 @@ class BackgroundTests(unittest.TestCase):
         capture.start(lambda _data: None)
         self.assertEqual(capture._on_rms, app._overlay.push_rms)
 
+    def test_paste_does_not_reopen_control_panel(self):
+        app = DoubaoInputApp()
+        app._overlay = MagicMock()
+        app._control = MagicMock()
+        app._control._window.get_visible.return_value = True
+        app._injector = MagicMock()
+        pending = []
+        with patch('doubao_input.app.GLib.timeout_add', side_effect=lambda _ms, fn: pending.append(fn)):
+            app._do_paste("测试文字")
+            while pending:
+                pending.pop(0)()
+        app._control.hide.assert_called_once()
+        app._control._window.set_visible.assert_not_called()
+        app._injector.inject.assert_called_once()
+
+    def test_background_start_hides_panel_but_explicit_activate_opens_it(self):
+        app = DoubaoInputApp()
+        app._control = MagicMock()
+        with patch.object(app, '_build'), patch.object(app, 'hold'), \
+             patch.dict('os.environ', {'DOUBAO_INPUT_BACKGROUND': '1'}), \
+             patch('doubao_input.app.GLib.timeout_add'):
+            app._on_activate(app)
+            app._control.show.assert_not_called()
+            app._on_activate(app)
+            app._control.show.assert_called_once()
+
     def test_connected_state_updates_starting_message(self):
         from doubao_input.doubao.app_state import RecordingState
         app = DoubaoInputApp()
